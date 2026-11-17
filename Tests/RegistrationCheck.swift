@@ -38,20 +38,31 @@ struct RegistrationCheck {
         let native = CGRect(x: 0, y: 0, width: 6048, height: 8064)
         let anchor = CGPoint(x: 0.5, y: 0.5)
         precondition(CameraGeometry.crop(in: native, center: anchor, digital: 1, aspect: 0.75) == native)
-        var stabilized = anchor
-        var priorDrift = 0.0
+        var stabilized = ReferenceCropTracker()
         var peakError = 0.0
         for index in 0..<90 {
             let drift = 0.008 * sin(Double(index) * 0.43)
-            stabilized = CameraGeometry.stabilizedCenter(stabilized, toward: anchor,
-                movement: CGPoint(x: drift - priorDrift, y: 0), digital: 3, elapsed: 1.0 / 30, followTime: 0.72)
-            peakError = max(peakError, abs(stabilized.x - (anchor.x + drift)))
-            priorDrift = drift
+            let observed = CGPoint(x: anchor.x + drift, y: anchor.y - drift)
+            precondition(stabilized.update(estimate: observed, digital: 3, sourceWidth: 1440))
+            peakError = max(peakError, hypot(stabilized.center.x - observed.x, stabilized.center.y - observed.y))
         }
         precondition(peakError < 0.002, "Synthetic jitter was not reduced enough")
-        let rejectedJump = CameraGeometry.stabilizedCenter(anchor, toward: anchor,
-            movement: CGPoint(x: 0.10, y: 0), digital: 50, elapsed: 1.0 / 30, followTime: 0.72)
-        precondition(rejectedJump.x - anchor.x <= 0.22 / 50)
-        print("Registration and framing: OK")
+        let held = stabilized.center
+        for _ in 0..<60 {
+            precondition(!stabilized.update(estimate: nil, digital: 50, sourceWidth: 1440))
+            precondition(stabilized.center == held)
+        }
+        let outlier = CGPoint(x: held.x + 0.10, y: held.y)
+        precondition(!stabilized.update(estimate: outlier, digital: 50, sourceWidth: 1440))
+        precondition(stabilized.center == held, "A single outlier moved the image")
+        precondition(stabilized.update(estimate: outlier, digital: 50, sourceWidth: 1440))
+        precondition(abs(stabilized.center.x - held.x - 0.24 / 50) < 1e-9)
+
+        stabilized.reset(to: anchor, digital: 50)
+        let target = CGPoint(x: 0.503, y: 0.497)
+        for _ in 0..<300 { stabilized.update(estimate: target, digital: 50, sourceWidth: 1440) }
+        precondition(hypot(stabilized.center.x - target.x, stabilized.center.y - target.y) < 0.0002,
+                     "A stationary reference drifted")
+        print("Registration, framing, stationary reference and dropout: OK")
     }
 }

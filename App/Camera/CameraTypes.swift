@@ -35,6 +35,7 @@ struct ZoomControls {
     var mode: ZoomMode = .quality
     var zoom = 1.0
     var neural = true
+    var softwareStabilization = true
     var locked = false
     var anchor = CGPoint(x: 0.5, y: 0.5)
     var trackingReset = 0
@@ -57,16 +58,6 @@ struct CameraGeometry {
                        y: min(1 - half, max(half, center.y)))
     }
 
-    static func stabilizedCenter(_ center: CGPoint, toward anchor: CGPoint, movement: CGPoint,
-                                 digital: CGFloat, elapsed: Double, followTime: Double) -> CGPoint {
-        let frameFraction = 0.22 / max(digital, 1)
-        let strength = min(1, frameFraction / max(0.00001, hypot(movement.x, movement.y)))
-        let tracked = CGPoint(x: center.x + movement.x * strength, y: center.y + movement.y * strength)
-        let recenter = 1 - exp(-max(0, elapsed) / followTime)
-        return bounded(CGPoint(x: tracked.x + (anchor.x - tracked.x) * recenter,
-                               y: tracked.y + (anchor.y - tracked.y) * recenter), digital: digital)
-    }
-
     static func crop(in extent: CGRect, center: CGPoint, digital: CGFloat, aspect: CGFloat) -> CGRect {
         let area = sourceArea(in: extent)
         let center = bounded(center, digital: digital)
@@ -81,6 +72,53 @@ struct CameraGeometry {
         let x = crop.minX + position.x * crop.width
         let y = crop.maxY - position.y * crop.height
         return CGPoint(x: (x - area.minX) / area.width, y: (area.maxY - y) / area.height)
+    }
+}
+
+struct ReferenceCropTracker {
+    private(set) var center = CGPoint(x: 0.5, y: 0.5)
+    private var pending: CGPoint?
+
+    mutating func reset(to point: CGPoint, digital: CGFloat) {
+        center = CameraGeometry.bounded(point, digital: digital)
+        pending = nil
+    }
+
+    /// The observation is an absolute crop center in the current sensor image.
+    /// A missed match leaves the composition in place. A large change must
+    /// agree with the next frame before it can move the visible window.
+    @discardableResult
+    mutating func update(estimate: CGPoint?, digital: CGFloat, sourceWidth: CGFloat) -> Bool {
+        center = CameraGeometry.bounded(center, digital: digital)
+        guard let estimate else { pending = nil; return false }
+        let target = CameraGeometry.bounded(estimate, digital: digital)
+        let frameWidth = 1 / max(1, digital)
+        guard hypot(estimate.x - target.x, estimate.y - target.y) <= frameWidth * 0.12 else {
+            pending = nil
+            return false
+        }
+        let dx = target.x - center.x
+        let dy = target.y - center.y
+        let distance = hypot(dx, dy)
+        if distance > frameWidth * 0.24 {
+            let confirmed = pending.map { hypot(target.x - $0.x, target.y - $0.y) <= frameWidth * 0.18 } ?? false
+            pending = target
+            guard confirmed else { return false }
+        } else {
+            pending = nil
+        }
+        let deadZone = 0.20 / max(1, sourceWidth)
+        if distance > deadZone {
+            let gain = min(0.90, frameWidth * 0.24 / distance)
+            center = CGPoint(x: center.x + gain * dx, y: center.y + gain * dy)
+        }
+        return true
+    }
+
+    mutating func pan(toward point: CGPoint, digital: CGFloat, elapsed: Double) {
+        let blend = 1 - exp(-elapsed / 0.18)
+        reset(to: CGPoint(x: center.x + (point.x - center.x) * blend,
+                          y: center.y + (point.y - center.y) * blend), digital: digital)
     }
 }
 

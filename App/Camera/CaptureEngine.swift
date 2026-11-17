@@ -127,30 +127,35 @@ final class CaptureEngine: NSObject {
                 }
                 self.applyZoom()
                 self.capturing = true
-                let recent = self.preview.latest.read()
                 let hardware = self.preview.hardware.read()
-                let recentIsValid = recent.map {
-                    abs($0.controls.zoom - controls.zoom) < 0.04 &&
-                    $0.controls.trackingReset == controls.trackingReset &&
-                    abs($0.hardware - hardware.zoom) < 0.03 &&
-                    CACurrentMediaTime() - $0.arrived < 0.4
-                } ?? false
-                let center = (recentIsValid ? recent?.center : nil) ??
-                    (controls.locked ? controls.anchor : CGPoint(x: 0.5, y: 0.5))
+                func freshFrame() -> ViewfinderFrame? {
+                    guard let frame = self.preview.latest.read(),
+                          abs(frame.controls.zoom - controls.zoom) < 0.04,
+                          frame.controls.trackingReset == controls.trackingReset,
+                          abs(frame.hardware - hardware.zoom) < 0.03,
+                          CACurrentMediaTime() - frame.arrived < 0.26 else { return nil }
+                    return frame
+                }
+                let recent = freshFrame()
+                let defaultCenter = controls.locked ? controls.anchor : CGPoint(x: 0.5, y: 0.5)
+                let framing = LockedValue((center: recent?.center ?? defaultCenter, sample: recent?.sample))
                 let thermal = ProcessInfo.processInfo.thermalState
                 let reduced = hardware.constrained || thermal == .serious || thermal == .critical
-                let hdr = !reduced && (2..<2.5).contains(controls.zoom) && recentIsValid && recent?.highlights == true &&
+                let hdr = !reduced && (2..<2.5).contains(controls.zoom) && recent?.highlights == true &&
                     controls.mode == .quality && abs(self.device?.exposureTargetBias ?? 0) < 0.15 &&
                     self.stills.maxBracketedCapturePhotoCount >= 2
                 let count = !reduced && controls.zoom >= 2.5 ? 3 : 1
-                self.sequence(remaining: count, bracket: hdr, collected: [], note: nil) { result in
+                self.sequence(remaining: count, bracket: hdr, collected: [], note: nil, firstExposure: {
+                    if let frame = freshFrame() {
+                        framing.update { $0 = (center: frame.center, sample: frame.sample) }
+                    }
+                }) { result in
                     self.capturing = false
                     self.applyZoom()
+                    let selected = framing.read()
                     continuation.resume(with: result.map { burst in
-                        CaptureTicket(controls: controls, center: center, hardware: hardware.zoom,
-                                      reduced: reduced, frames: burst.frames,
-                                      sample: recentIsValid && controls.zoom >= ZoomControls.minimumLockZoom
-                                        ? recent?.sample : nil,
+                        CaptureTicket(controls: controls, center: selected.center, hardware: hardware.zoom,
+                                      reduced: reduced, frames: burst.frames, sample: selected.sample,
                                       captureNote: burst.note)
                     })
                 }
@@ -259,6 +264,7 @@ final class CaptureEngine: NSObject {
     private typealias Burst = (frames: [SourcePhoto], note: String?)
 
     private func sequence(remaining: Int, bracket: Bool, collected: [SourcePhoto], note: String?,
+                          firstExposure: @escaping () -> Void,
                           completion: @escaping (Result<Burst, Error>) -> Void) {
         guard remaining > 0, wantsRunning, session.isRunning, !session.isInterrupted,
               stills.connection(with: .video)?.isActive == true else {
@@ -286,7 +292,7 @@ final class CaptureEngine: NSObject {
         }
 
         let id = settings.uniqueID
-        let delegate = PhotoDelegate { [weak self] result in
+        let delegate = PhotoDelegate(willCapture: collected.isEmpty ? firstExposure : {}) { [weak self] result in
             guard let self else { completion(.failure(CameraFailure.capture)); return }
             self.queue.async {
                 self.delegates[id] = nil
@@ -298,12 +304,12 @@ final class CaptureEngine: NSObject {
                         completion(.success((collected + photos, note)))
                     } else {
                         self.sequence(remaining: remaining - 1, bracket: false, collected: collected + photos,
-                                      note: note, completion: completion)
+                                      note: note, firstExposure: firstExposure, completion: completion)
                     }
                 default:
                     if useBracket {
                         self.sequence(remaining: remaining, bracket: false, collected: collected,
-                                      note: "HDR-серия недоступна", completion: completion)
+                                      note: "HDR-серия недоступна", firstExposure: firstExposure, completion: completion)
                     } else if collected.isEmpty {
                         completion(.failure(CameraFailure.capture))
                     } else {
@@ -327,11 +333,17 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
 }
 
 private final class PhotoDelegate: NSObject, AVCapturePhotoCaptureDelegate {
+    private let willCapture: () -> Void
     private let completion: (Result<[SourcePhoto], Error>) -> Void
     private var photos: [SourcePhoto] = []
 
-    init(completion: @escaping (Result<[SourcePhoto], Error>) -> Void) {
+    init(willCapture: @escaping () -> Void, completion: @escaping (Result<[SourcePhoto], Error>) -> Void) {
+        self.willCapture = willCapture
         self.completion = completion
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput, willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings) {
+        willCapture()
     }
 
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto,

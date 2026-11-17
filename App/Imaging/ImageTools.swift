@@ -11,6 +11,17 @@ enum ImageTools {
                                                 y: -image.extent.minY))
     }
 
+    /// Transform the full source before clipping to a fixed output grid.
+    /// Cropping first can quantize the origin on narrow, high-zoom windows.
+    static func sample(_ image: CIImage, rect: CGRect, width: CGFloat, height: CGFloat) -> CIImage {
+        let sx = width / rect.width
+        let sy = height / rect.height
+        let mapping = CGAffineTransform(a: sx, b: 0, c: 0, d: sy,
+                                       tx: -rect.minX * sx, ty: -rect.minY * sy)
+        return image.clampedToExtent().transformed(by: mapping)
+            .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
+    }
+
     static func resized(_ image: CIImage, width: CGFloat, height: CGFloat,
                         highQuality: Bool = true) -> CIImage {
         let source = normalized(image)
@@ -30,8 +41,7 @@ enum ImageTools {
     }
 
     static func patch(_ image: CIImage, rect: CGRect, size: Int, context: CIContext) -> GrayPatch {
-        let patch = resized(image.clampedToExtent().cropped(to: rect), width: CGFloat(size),
-                            height: CGFloat(size), highQuality: false)
+        let patch = sample(image, rect: rect, width: CGFloat(size), height: CGFloat(size))
         var gray = [Float](repeating: 0, count: size * size)
         guard let buffer = pixelBuffer(width: size, height: size) else {
             return GrayPatch(size: size, values: gray)

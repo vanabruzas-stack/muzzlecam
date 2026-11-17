@@ -130,6 +130,9 @@ struct CameraScreen: View {
             }
             Spacer()
             icon("info", label: "О режимах и устройстве", active: false) { info = true }
+            icon("hand.raised", label: model.controls.softwareStabilization
+                 ? "Отключить программную стабилизацию" : "Включить программную стабилизацию",
+                 active: model.controls.softwareStabilization) { model.toggleStabilization() }
             icon("plus.forwardslash.minus", label: "Компенсация экспозиции", active: exposurePanel) {
                 withAnimation(.easeInOut(duration: 0.18)) { exposurePanel.toggle() }
             }
@@ -138,6 +141,7 @@ struct CameraScreen: View {
     }
 
     private var stabilizationLabel: String {
+        if !model.controls.softwareStabilization { return "ПРОГРАММНАЯ СТАБ. ВЫКЛ." }
         if model.controls.locked { return model.tracking ? "ZOOM LOCK · ЗАХВАТ" : "ZOOM LOCK · ПОИСК" }
         if model.tracking { return "СТАБИЛИЗАЦИЯ · АКТИВНА" }
         if model.controls.zoom >= ZoomControls.minimumLockZoom { return "СТАБИЛИЗАЦИЯ · ПОИСК" }
@@ -188,8 +192,8 @@ struct CameraScreen: View {
                     Spacer(minLength: 85)
                     icon("scope", label: model.controls.locked ? "Отключить Zoom Lock" : "Включить Zoom Lock",
                          active: model.controls.locked) { model.toggleLock() }
-                        .disabled(model.controls.zoom < ZoomControls.minimumLockZoom)
-                        .opacity(model.controls.zoom < ZoomControls.minimumLockZoom ? 0.46 : 1)
+                        .disabled(!model.controls.softwareStabilization || model.controls.zoom < ZoomControls.minimumLockZoom)
+                        .opacity(model.controls.softwareStabilization && model.controls.zoom >= ZoomControls.minimumLockZoom ? 1 : 0.46)
                     icon("sparkles", label: model.controls.neural ? "Отключить ИИ" : "Включить ИИ",
                          active: model.controls.neural && model.controls.mode != .quality) {
                         model.setNeural(!model.controls.neural)

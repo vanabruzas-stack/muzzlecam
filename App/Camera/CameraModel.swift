@@ -123,10 +123,20 @@ final class CameraModel: ObservableObject {
     }
 
     func toggleLock() {
-        guard controls.zoom >= ZoomControls.minimumLockZoom, phase != .capturing else { return }
+        guard controls.softwareStabilization, controls.zoom >= ZoomControls.minimumLockZoom,
+              phase != .capturing else { return }
         controls.locked.toggle()
         controls.anchor = preview.latest.read()?.center ?? CGPoint(x: 0.5, y: 0.5)
         controls.trackingReset += 1
+        engine.update(controls)
+    }
+
+    func toggleStabilization() {
+        guard phase != .capturing else { return }
+        controls.softwareStabilization.toggle()
+        if !controls.softwareStabilization { controls.locked = false }
+        controls.trackingReset += 1
+        tracking = false
         engine.update(controls)
     }
 
@@ -159,7 +169,9 @@ final class CameraModel: ObservableObject {
         guard canCapture else { return }
         let snapshot = controls
         phase = .capturing
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        if snapshot.zoom < 2 {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        }
         Task {
             defer { phase = nil }
             do {

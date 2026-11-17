@@ -32,7 +32,7 @@ enum PatchRegistration {
     }
 
     static func match(_ reference: GrayPatch, _ current: GrayPatch,
-                      radius: Int, threshold: Float = 0.78) -> Match? {
+                      radius: Int, threshold: Float = 0.78, minimumPeakGap: Float = 0.025) -> Match? {
         guard reference.size == current.size, radius >= 2 else { return nil }
         let size = reference.size
         let border = radius + 3
@@ -94,10 +94,11 @@ enum PatchRegistration {
                 }
             }
         }
+        let separation = min(4, radius - 1)
         let competing = coarse.lazy
-            .filter { abs($0.x - bestX) > 4 || abs($0.y - bestY) > 4 }
+            .filter { abs($0.x - bestX) > separation || abs($0.y - bestY) > separation }
             .map(\.score).max() ?? -1
-        guard best >= threshold, best - competing > 0.025,
+        guard best >= threshold, best - competing > minimumPeakGap,
               abs(bestX) < radius, abs(bestY) < radius else { return nil }
 
         func refine(_ left: Float, _ right: Float) -> Float {

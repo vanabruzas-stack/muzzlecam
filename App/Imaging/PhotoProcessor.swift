@@ -50,7 +50,10 @@ final class PhotoProcessor {
         var notes = [String]()
         if let captureNote = ticket.captureNote { notes.append(captureNote) }
         if ticket.reduced { notes.append("Щадящая обработка из-за нагрева") }
-        let base = ImageTools.normalized(reference.cropped(to: crop))
+        let gridWidth = max(2, crop.width.rounded())
+        let gridHeight = max(2, crop.height.rounded())
+        let base = nativeShot ? reference : ImageTools.sample(reference, rect: crop,
+                                                               width: gridWidth, height: gridHeight)
         var evidence = base
 
         let candidates = ticket.frames.filter { $0.dark } + Array(ticket.frames.filter { !$0.dark }.dropFirst())
@@ -73,7 +76,7 @@ final class PhotoProcessor {
             }
             aligned.insert(AlignedExposure(image: reference, offset: CGPoint(x: -best.offset.x, y: -best.offset.y),
                                            darkGain: nil, weight: 1 / best.weight), at: 0)
-            evidence = ImageTools.normalized(anchor.cropped(to: anchorCrop))
+            evidence = ImageTools.sample(anchor, rect: anchorCrop, width: gridWidth, height: gridHeight)
         }
         if !candidates.isEmpty {
             // Zoomed photos benefit from a denser sampling grid. HDR brackets
@@ -180,7 +183,7 @@ final class PhotoProcessor {
                           y: area.maxY - sample.center.y * area.height - side / 2,
                           width: side, height: side)
         let current = ImageTools.patch(reference, rect: rect, size: sample.patch.size, context: context)
-        guard let match = PatchRegistration.match(sample.patch, current, radius: 10, threshold: 0.87)
+        guard let match = PatchRegistration.match(sample.patch, current, radius: 10, threshold: 0.91)
         else { return ticket.center }
         let scale = side / CGFloat(sample.patch.size)
         return CGPoint(x: ticket.center.x + CGFloat(match.offset.x) * scale / area.width,

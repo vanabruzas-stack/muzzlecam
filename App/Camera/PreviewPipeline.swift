@@ -107,7 +107,8 @@ final class PreviewPipeline {
         let crop = CameraGeometry.crop(in: image.extent, center: reading.center,
                                        digital: CGFloat(controls.zoom) / hardware.zoom,
                                        aspect: CameraGeometry.aspect)
-        let cropped = ImageTools.normalized(image.cropped(to: crop))
+        let grid = max(4, (crop.height / 4).rounded(.toNearestOrEven))
+        let cropped = ImageTools.sample(image, rect: crop, width: grid * 3, height: grid * 4)
         var output = cropped
         var status: PreviewStatus = wantsNeural ? (modelFailed ? .modelUnavailable : .limited) : .standard
         let strength: Float = controls.mode == .extreme ? 0.12 : 0.27
