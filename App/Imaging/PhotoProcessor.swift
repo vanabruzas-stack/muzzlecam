@@ -1,6 +1,7 @@
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import Foundation
+import ImageIO
 import Metal
 import UIKit
 
@@ -113,12 +114,13 @@ final class PhotoProcessor {
         guard let output = color.outputImage?.cropped(to: result.extent) else { throw CameraFailure.processing }
         let data: Data
         let extensionName: String
+        let quality = CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String)
         if let heif = context.heifRepresentation(of: output, format: .RGBA8, colorSpace: ImageTools.p3,
-                                                options: [.lossyCompressionQuality: 0.94]) {
+                                                options: [quality: 0.94]) {
             data = heif
             extensionName = "heic"
         } else if let jpeg = context.jpegRepresentation(of: output, colorSpace: ImageTools.p3,
-                                                        options: [.lossyCompressionQuality: 0.96]) {
+                                                        options: [quality: 0.96]) {
             data = jpeg
             extensionName = "jpg"
         } else { throw CameraFailure.processing }
