@@ -43,6 +43,7 @@ struct ZoomControls {
 
 struct CameraGeometry {
     static let aspect: CGFloat = 0.75
+    static let exportLongEdge: CGFloat = 4096
 
     /// Coordinates are normalized in the common, upright 3:4 source area.
     static func sourceArea(in extent: CGRect) -> CGRect {
@@ -72,6 +73,14 @@ struct CameraGeometry {
         let x = crop.minX + position.x * crop.width
         let y = crop.maxY - position.y * crop.height
         return CGPoint(x: (x - area.minX) / area.width, y: (area.maxY - y) / area.height)
+    }
+
+    static func exportSize(for crop: CGSize, mode: ZoomMode, nativeShot: Bool) -> CGSize {
+        if nativeShot { return crop }
+        let height = mode == .quality ? max(exportLongEdge, crop.height.rounded(.down)) : exportLongEdge
+        let evenHeight = max(2, floor(height / 2) * 2)
+        let evenWidth = max(2, floor(evenHeight * aspect / 2) * 2)
+        return CGSize(width: evenWidth, height: evenHeight)
     }
 }
 

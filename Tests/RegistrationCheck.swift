@@ -38,6 +38,12 @@ struct RegistrationCheck {
         let native = CGRect(x: 0, y: 0, width: 6048, height: 8064)
         let anchor = CGPoint(x: 0.5, y: 0.5)
         precondition(CameraGeometry.crop(in: native, center: anchor, digital: 1, aspect: 0.75) == native)
+        precondition(CameraGeometry.exportSize(for: native.size, mode: .quality, nativeShot: true) == native.size)
+        let tiny = CGSize(width: 30.2, height: 40.266)
+        for mode in ZoomMode.allCases {
+            precondition(CameraGeometry.exportSize(for: tiny, mode: mode, nativeShot: false)
+                         == CGSize(width: 3072, height: 4096))
+        }
         var stabilized = ReferenceCropTracker()
         var peakError = 0.0
         for index in 0..<90 {

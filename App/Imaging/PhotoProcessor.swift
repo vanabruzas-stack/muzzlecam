@@ -16,6 +16,7 @@ final class PhotoProcessor {
     private let queue = DispatchQueue(label: "MuzzleZoom.PhotoProcessing", qos: .userInitiated)
     private let context: CIContext
     private let neural = NeuralScaler(.photo)
+    private let extremeNeural = NeuralScaler(.extreme)
     private let device: MTLDevice?
     private lazy var fusion = BurstFusion(device: device)
 
@@ -92,38 +93,39 @@ final class PhotoProcessor {
             }
         }
 
-        let referenceHeight = base.extent.height
         let mode = ticket.controls.mode
-        let cap: CGFloat = mode == .quality ? (ticket.reduced ? 3456 : 5760) :
-            (mode == .superResolution ? 3072 : 1792)
-        let targetHeight = max(2, min(cap, max(referenceHeight, mode == .quality && digital < 2 ? 0 : 1280)))
-            .rounded(.down)
-        let targetWidth = max(2, floor(targetHeight * crop.width / crop.height / 2) * 2)
+        let target = CameraGeometry.exportSize(for: crop.size, mode: mode, nativeShot: nativeShot)
         // At 1× the ISP has already processed the full-resolution photo.
         // Keep its original grid and avoid losing fine texture to a second denoise pass.
         var result = evidence
         if !nativeShot {
             let noise: Float = mode == .quality ? 0.011 : (aligned.isEmpty ? 0.024 : 0.012)
-            let evidenceInput = ImageTools.filtered(evidence, noise: noise,
-                                                    sharpness: mode == .quality ? 0.19 : 0.11)
-            result = ImageTools.resized(evidenceInput, width: targetWidth, height: targetHeight)
+            result = ImageTools.filtered(evidence, noise: noise, sharpness: mode == .quality ? 0.19 : 0.11)
         }
 
+        var reconstructedWithAI = false
         if ticket.controls.neural && mode != .quality && !ticket.reduced {
             if isHot {
                 notes.append("ИИ приостановлен из-за нагрева")
             } else {
                 do {
-                    // Limit inference to a bounded tile grid. The layer is blended
-                    // with the independently reconstructed camera evidence.
-                    let maxSide: CGFloat = 300
-                    let ratio = min(1, maxSide / max(base.extent.width, base.extent.height))
-                    let w = max(2, floor(base.extent.width * ratio))
-                    let h = max(2, floor(base.extent.height * ratio))
-                    let srInput = ImageTools.resized(evidence, width: w, height: h)
-                    let sr = try neural.still(srInput, context: context)
-                    result = NeuralScaler.blend(sr, with: result, amount: mode == .extreme ? 0.16 : 0.36)
-                    notes.append("ИИ-реконструкция")
+                    if mode == .extreme, base.extent.height <= 112,
+                       let enhanced = try? extremeNeural.restoreCrop(evidence, context: context) {
+                        result = NeuralScaler.mergePhotoDetail(enhanced, with: result, amount: 0.76)
+                        notes.append("ИИ-реконструкция · x4plus")
+                    } else {
+                        // Preserve additional samples from burst fusion within a bounded model tile grid.
+                        let maxSide: CGFloat = mode == .extreme ? 360 : 300
+                        let ratio = min(1, maxSide / max(evidence.extent.width, evidence.extent.height))
+                        let w = max(2, floor(evidence.extent.width * ratio))
+                        let h = max(2, floor(evidence.extent.height * ratio))
+                        let input = ImageTools.resized(evidence, width: w, height: h)
+                        let enhanced = try neural.still(input, context: context)
+                        result = NeuralScaler.mergePhotoDetail(enhanced, with: result,
+                                                               amount: mode == .extreme ? 0.63 : 0.43)
+                        notes.append("ИИ-реконструкция")
+                    }
+                    reconstructedWithAI = true
                 } catch {
                     notes.append("ИИ недоступен · снимок обработан без модели")
                 }
@@ -138,7 +140,8 @@ final class PhotoProcessor {
         color.inputImage = tone.outputImage ?? result
         color.contrast = mode == .quality ? 1.025 : 1.035
         color.saturation = mode == .quality ? 1.015 : 1.01
-        guard let output = color.outputImage?.cropped(to: result.extent) else { throw CameraFailure.processing }
+        guard let graded = color.outputImage?.cropped(to: result.extent) else { throw CameraFailure.processing }
+        let output = nativeShot ? graded : ImageTools.resized(graded, width: target.width, height: target.height)
         let data: Data
         let extensionName: String
         let quality = CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String)
@@ -153,7 +156,11 @@ final class PhotoProcessor {
         } else { throw CameraFailure.processing }
         let small = ImageTools.resized(output, width: 144, height: 144 * output.extent.height / output.extent.width)
         let thumbnail = context.createCGImage(small, from: small.extent).map { UIImage(cgImage: $0) }
-        let file = "MuzzleZoom-\(UUID().uuidString.prefix(12)).\(extensionName)"
+        let marker = reconstructedWithAI ? "-AI" : ""
+        let file = "MuzzleZoom\(marker)-\(UUID().uuidString.prefix(12)).\(extensionName)"
+        if mode == .extreme {
+            notes.append("Исходный кроп \(Int(gridWidth)) × \(Int(gridHeight))")
+        }
         if let source = CGImageSourceCreateWithData(data as CFData, nil),
            let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
            let w = metadata[kCGImagePropertyPixelWidth] as? Int,

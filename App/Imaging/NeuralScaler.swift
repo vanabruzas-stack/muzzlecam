@@ -6,9 +6,21 @@ import OSLog
 /// Each pipeline owns a model instance and uses it from its serial worker queue.
 final class NeuralScaler {
     enum Use {
-        case preview, photo
-        var name: String { self == .preview ? "MuzzlePreviewSR" : "MuzzlePhotoSR" }
-        var size: Int { self == .preview ? 48 : 128 }
+        case preview, photo, extreme
+        var name: String {
+            switch self {
+            case .preview: "MuzzlePreviewSR"
+            case .photo: "MuzzlePhotoSR"
+            case .extreme: "MuzzleExtremeSR"
+            }
+        }
+        var size: Int {
+            switch self {
+            case .preview: 48
+            case .photo: 128
+            case .extreme: 96
+            }
+        }
     }
 
     private let use: Use
@@ -93,6 +105,34 @@ final class NeuralScaler {
             }
         }
         return result.cropped(to: fullExtent)
+    }
+
+    func restoreCrop(_ image: CIImage, context: CIContext) throws -> CIImage {
+        let size = CGFloat(use.size)
+        let maxSide = size - 16
+        let scale = min(1, maxSide / max(image.extent.width, image.extent.height))
+        let width = max(2, floor(image.extent.width * scale))
+        let height = max(2, floor(image.extent.height * scale))
+        let source = ImageTools.resized(image, width: width, height: height)
+        let left = floor((size - width) / 2)
+        let bottom = floor((size - height) / 2)
+        let tile = ImageTools.normalized(source.clampedToExtent().cropped(
+            to: CGRect(x: -left, y: -bottom, width: size, height: size)))
+        let predicted = try predict(tile, context: context)
+        return ImageTools.normalized(predicted.cropped(
+            to: CGRect(x: left * 4, y: bottom * 4, width: width * 4, height: height * 4)))
+    }
+
+    /// Keep camera chroma and increase the weight of reconstructed luminance.
+    static func mergePhotoDetail(_ enhanced: CIImage, with evidence: CIImage, amount: Float) -> CIImage {
+        let width = max(enhanced.extent.width, evidence.extent.width)
+        let height = max(enhanced.extent.height, evidence.extent.height)
+        let source = ImageTools.resized(evidence, width: width, height: height)
+        let detail = ImageTools.resized(enhanced, width: width, height: height)
+        let luminance = CIFilter.luminosityBlendMode()
+        luminance.inputImage = detail
+        luminance.backgroundImage = source
+        return blend(luminance.outputImage ?? detail, with: source, amount: amount)
     }
 
     static func blend(_ neural: CIImage, with evidence: CIImage, amount: Float) -> CIImage {

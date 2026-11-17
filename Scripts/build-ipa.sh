@@ -51,17 +51,20 @@ xcrun vtool -show-build "$binary" | grep -Eq 'platform[[:space:]]+IOS([[:space:]
 [[ "$(plutil -extract CFBundleIdentifier raw -o - "$product/Info.plist")" == "$bundle_id" ]]
 test -d "$product/MuzzlePreviewSR.mlmodelc"
 test -d "$product/MuzzlePhotoSR.mlmodelc"
+test -d "$product/MuzzleExtremeSR.mlmodelc"
 test -f "$product/default.metallib"
 test ! -e "$product/embedded.mobileprovision"
 test ! -d "$product/_CodeSignature"
 
-# Exercise the same two compiled models through Core ML on the Apple runner.
+# Exercise the compiled models through Core ML on the Apple runner.
 # iPhone Neural Engine performance still requires the physical phone.
 mkdir "$build/HostModels"
-for model in MuzzlePreviewSR MuzzlePhotoSR; do
+for model in MuzzlePreviewSR MuzzlePhotoSR MuzzleExtremeSR; do
   xcrun coremlcompiler compile "$root/App/Models/$model.mlmodel" "$build/HostModels"
 done
-xcrun swiftc -O -parse-as-library "$root/Tests/CoreMLCheck.swift" -o "$build/check-models"
+xcrun swiftc -O -parse-as-library "$root/App/Camera/CameraTypes.swift" \
+  "$root/App/Imaging/Registration.swift" "$root/App/Imaging/ImageTools.swift" \
+  "$root/Tests/CoreMLCheck.swift" -o "$build/check-models"
 "$build/check-models" "$build/HostModels"
 
 mkdir "$build/Payload"

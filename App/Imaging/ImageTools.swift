@@ -25,6 +25,7 @@ enum ImageTools {
     static func resized(_ image: CIImage, width: CGFloat, height: CGFloat,
                         highQuality: Bool = true) -> CIImage {
         let source = normalized(image)
+        if source.extent.width == width && source.extent.height == height { return source }
         let sx = width / source.extent.width
         let sy = height / source.extent.height
         let target = CGRect(x: 0, y: 0, width: width, height: height)
