@@ -42,8 +42,9 @@ final class PhotoProcessor {
 
         let digital = max(1, CGFloat(ticket.controls.zoom) / ticket.hardware)
         let center = registeredCenter(in: reference, ticket: ticket)
-        let crop = CameraGeometry.crop(in: reference.extent, center: center, digital: digital,
-                                       aspect: ticket.controls.aspect)
+        let nativeShot = ticket.controls.mode == .quality && ticket.controls.zoom <= 1.001
+        let crop = nativeShot ? reference.extent : CameraGeometry.crop(
+            in: reference.extent, center: center, digital: digital, aspect: CameraGeometry.aspect)
         guard crop.width >= 2, crop.height >= 2 else { throw CameraFailure.processing }
 
         var notes = [String]()
@@ -53,15 +54,32 @@ final class PhotoProcessor {
         var evidence = base
 
         let candidates = ticket.frames.filter { $0.dark } + Array(ticket.frames.filter { !$0.dark }.dropFirst())
-        let aligned = candidates.compactMap { source -> AlignedExposure? in
+        var aligned = candidates.compactMap { source -> AlignedExposure? in
             guard let image = decode(source), image.extent.size == reference.extent.size else { return nil }
             return align(image, with: reference, crop: crop, dark: source.dark)
+        }
+        var anchor = reference
+        var anchorCrop = crop
+        if let sharpest = aligned.indices.filter({ aligned[$0].darkGain == nil })
+            .max(by: { aligned[$0].weight < aligned[$1].weight }),
+           aligned[sharpest].weight >= 1.14 {
+            let best = aligned.remove(at: sharpest)
+            anchor = best.image
+            anchorCrop = crop.offsetBy(dx: best.offset.x, dy: best.offset.y)
+            aligned = aligned.map {
+                AlignedExposure(image: $0.image,
+                                offset: CGPoint(x: $0.offset.x - best.offset.x, y: $0.offset.y - best.offset.y),
+                                darkGain: $0.darkGain, weight: min(1, $0.weight / best.weight))
+            }
+            aligned.insert(AlignedExposure(image: reference, offset: CGPoint(x: -best.offset.x, y: -best.offset.y),
+                                           darkGain: nil, weight: 1 / best.weight), at: 0)
+            evidence = ImageTools.normalized(anchor.cropped(to: anchorCrop))
         }
         if !candidates.isEmpty {
             // Zoomed photos benefit from a denser sampling grid. HDR brackets
             // at low zoom use the native grid within a bounded memory budget.
             let scale = digital >= 2 && crop.height <= 1100 ? 2 : 1
-            if let reconstructed = fusion?.reconstruct(reference, crop: crop, exposures: aligned,
+            if let reconstructed = fusion?.reconstruct(anchor, crop: anchorCrop, exposures: aligned,
                                                        scale: scale, context: context) {
                 evidence = ImageTools.normalized(reconstructed)
                 if aligned.contains(where: { $0.darkGain != nil }) { notes.append("HDR из двух экспозиций") }
@@ -78,9 +96,15 @@ final class PhotoProcessor {
         let targetHeight = max(2, min(cap, max(referenceHeight, mode == .quality && digital < 2 ? 0 : 1280)))
             .rounded(.down)
         let targetWidth = max(2, floor(targetHeight * crop.width / crop.height / 2) * 2)
-        let evidenceInput = ImageTools.filtered(evidence, noise: aligned.isEmpty ? 0.024 : 0.012,
-                                                sharpness: mode == .quality ? 0.21 : 0.11)
-        var result = ImageTools.resized(evidenceInput, width: targetWidth, height: targetHeight)
+        // At 1× the ISP has already processed the full-resolution photo.
+        // Keep its original grid and avoid losing fine texture to a second denoise pass.
+        var result = evidence
+        if !nativeShot {
+            let noise: Float = mode == .quality ? 0.011 : (aligned.isEmpty ? 0.024 : 0.012)
+            let evidenceInput = ImageTools.filtered(evidence, noise: noise,
+                                                    sharpness: mode == .quality ? 0.19 : 0.11)
+            result = ImageTools.resized(evidenceInput, width: targetWidth, height: targetHeight)
+        }
 
         if ticket.controls.neural && mode != .quality && !ticket.reduced {
             if isHot {
@@ -127,6 +151,13 @@ final class PhotoProcessor {
         let small = ImageTools.resized(output, width: 144, height: 144 * output.extent.height / output.extent.width)
         let thumbnail = context.createCGImage(small, from: small.extent).map { UIImage(cgImage: $0) }
         let file = "MuzzleZoom-\(UUID().uuidString.prefix(12)).\(extensionName)"
+        if let source = CGImageSourceCreateWithData(data as CFData, nil),
+           let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let w = metadata[kCGImagePropertyPixelWidth] as? Int,
+           let h = metadata[kCGImagePropertyPixelHeight] as? Int {
+            notes.insert("\(w) × \(h) · " + (Double(w * h) / 1_000_000)
+                .formatted(.number.precision(.fractionLength(1))) + " Мп", at: 0)
+        }
         return ProcessedPhoto(data: data, fileName: file, thumbnail: thumbnail, notes: notes)
     }
 
@@ -188,7 +219,8 @@ final class PhotoProcessor {
             image, rect: region.offsetBy(dx: shift.x, dy: shift.y), size: first.size, context: context)) : nil
         if dark && gain == nil { return nil }
 
-        let ratio = second.sharpness / max(1, first.sharpness)
+        let ratio = fineMatch == nil ? second.sharpness / max(1, first.sharpness)
+            : fineCandidate.sharpness / max(1, fineReference.sharpness)
         guard dark || ratio > 0.58 else { return nil }
         let weight = dark ? 1 : min(1.2, max(0.45, ratio))
         return AlignedExposure(image: image, offset: shift, darkGain: gain, weight: weight)

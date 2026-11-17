@@ -30,13 +30,14 @@ enum ZoomMode: Int, CaseIterable, Identifiable {
 }
 
 struct ZoomControls {
+    static let minimumLockZoom = 2.05
+
     var mode: ZoomMode = .quality
     var zoom = 1.0
     var neural = true
     var locked = false
     var anchor = CGPoint(x: 0.5, y: 0.5)
     var trackingReset = 0
-    var aspect = CameraGeometry.aspect
 }
 
 struct CameraGeometry {
@@ -54,6 +55,16 @@ struct CameraGeometry {
         let half = 0.5 / max(1, digital)
         return CGPoint(x: min(1 - half, max(half, center.x)),
                        y: min(1 - half, max(half, center.y)))
+    }
+
+    static func stabilizedCenter(_ center: CGPoint, toward anchor: CGPoint, movement: CGPoint,
+                                 digital: CGFloat, elapsed: Double, followTime: Double) -> CGPoint {
+        let frameFraction = 0.22 / max(digital, 1)
+        let strength = min(1, frameFraction / max(0.00001, hypot(movement.x, movement.y)))
+        let tracked = CGPoint(x: center.x + movement.x * strength, y: center.y + movement.y * strength)
+        let recenter = 1 - exp(-max(0, elapsed) / followTime)
+        return bounded(CGPoint(x: tracked.x + (anchor.x - tracked.x) * recenter,
+                               y: tracked.y + (anchor.y - tracked.y) * recenter), digital: digital)
     }
 
     static func crop(in extent: CGRect, center: CGPoint, digital: CGFloat, aspect: CGFloat) -> CGRect {

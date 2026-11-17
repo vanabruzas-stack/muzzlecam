@@ -139,17 +139,18 @@ final class CaptureEngine: NSObject {
                     (controls.locked ? controls.anchor : CGPoint(x: 0.5, y: 0.5))
                 let thermal = ProcessInfo.processInfo.thermalState
                 let reduced = hardware.constrained || thermal == .serious || thermal == .critical
-                let hdr = !reduced && recentIsValid && recent?.highlights == true &&
+                let hdr = !reduced && (2..<2.5).contains(controls.zoom) && recentIsValid && recent?.highlights == true &&
                     controls.mode == .quality && abs(self.device?.exposureTargetBias ?? 0) < 0.15 &&
                     self.stills.maxBracketedCapturePhotoCount >= 2
-                let count = !reduced && (controls.zoom >= 5 || controls.mode != .quality) ? 3 : 1
+                let count = !reduced && controls.zoom >= 2.5 ? 3 : 1
                 self.sequence(remaining: count, bracket: hdr, collected: [], note: nil) { result in
                     self.capturing = false
                     self.applyZoom()
                     continuation.resume(with: result.map { burst in
                         CaptureTicket(controls: controls, center: center, hardware: hardware.zoom,
                                       reduced: reduced, frames: burst.frames,
-                                      sample: recentIsValid && controls.zoom >= 5 ? recent?.sample : nil,
+                                      sample: recentIsValid && controls.zoom >= ZoomControls.minimumLockZoom
+                                        ? recent?.sample : nil,
                                       captureNote: burst.note)
                     })
                 }
@@ -180,18 +181,13 @@ final class CaptureEngine: NSObject {
         defer { session.commitConfiguration() }
         session.inputs.forEach { session.removeInput($0) }
         session.outputs.forEach { session.removeOutput($0) }
-        if session.canSetSessionPreset(.photo) { session.sessionPreset = .photo }
         let input = try AVCaptureDeviceInput(device: camera)
         guard session.canAddInput(input) else { throw CameraFailure.unavailable }
         session.addInput(input)
+        guard session.canSetSessionPreset(.photo) else { throw CameraFailure.unavailable }
+        session.sessionPreset = .photo
 
         try camera.lockForConfiguration()
-        if let format = bestFormat(for: camera) {
-            camera.activeFormat = format
-            let frameDuration = CMTime(value: 1, timescale: 30)
-            camera.activeVideoMinFrameDuration = frameDuration
-            camera.activeVideoMaxFrameDuration = frameDuration
-        }
         if camera.activeFormat.supportedColorSpaces.contains(.P3_D65) {
             session.automaticallyConfiguresCaptureDeviceForWideColor = false
             camera.activeColorSpace = .P3_D65
@@ -204,17 +200,11 @@ final class CaptureEngine: NSObject {
         guard session.canAddOutput(stills) else { throw CameraFailure.unavailable }
         session.addOutput(stills)
         stills.maxPhotoQualityPrioritization = .quality
-        let largest = camera.activeFormat.supportedMaxPhotoDimensions.max { Self.pixels($0) < Self.pixels($1) }
-        if let largest {
-            stills.maxPhotoDimensions = largest
-            photoSize = largest
-        }
-
         guard session.canAddOutput(frames) else { throw CameraFailure.unavailable }
         session.addOutput(frames)
         frames.alwaysDiscardsLateVideoFrames = true
         frames.automaticallyConfiguresOutputBufferDimensions = false
-        frames.deliversPreviewSizedOutputBuffers = true
+        frames.deliversPreviewSizedOutputBuffers = false
         let types = frames.availableVideoPixelFormatTypes
         let preferred = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         let fallback = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
@@ -231,11 +221,11 @@ final class CaptureEngine: NSObject {
         frames.setSampleBufferDelegate(self, queue: preview.queue)
         device = camera
         let format = camera.activeFormat
+        photoSize = format.supportedMaxPhotoDimensions.max { Self.pixels($0) < Self.pixels($1) }
+        if let photoSize { stills.maxPhotoDimensions = photoSize }
         let secondary = format.secondaryNativeResolutionZoomFactors.filter { $0 <= 2.02 }.max() ?? 1
         let nativeLimit = max(format.videoZoomFactorUpscaleThreshold, secondary)
         hardwareLimit = max(1, min(2, camera.maxAvailableVideoZoomFactor, nativeLimit))
-        let fieldOfView = CGFloat(camera.activeFormat.videoFieldOfView) * .pi / 180
-        preview.hardware.update { $0.fieldOfView = fieldOfView }
         pressureObserver = camera.observe(\.systemPressureState, options: [.initial, .new]) { [weak self] camera, _ in
             let level = camera.systemPressureState.level
             self?.preview.hardware.update {
@@ -248,23 +238,6 @@ final class CaptureEngine: NSObject {
 
     private static func pixels(_ size: CMVideoDimensions) -> Int {
         Int(size.width) * Int(size.height)
-    }
-
-    private func bestFormat(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
-        let candidates = device.formats.filter { format in
-            let size = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            let ratio = Double(size.width) / Double(size.height)
-            return !format.supportedMaxPhotoDimensions.isEmpty && size.width >= 1280 &&
-                size.width <= 4032 && abs(ratio - (4.0 / 3.0)) < 0.05 &&
-                format.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= 30 && $0.maxFrameRate >= 30 }
-        }
-        func rank(_ format: AVCaptureDevice.Format) -> (Int, Int, Int, Int) {
-            let photo = format.supportedMaxPhotoDimensions.map(Self.pixels).max() ?? 0
-            let video = Self.pixels(CMVideoFormatDescriptionGetDimensions(format.formatDescription))
-            return (photo, format.isHighestPhotoQualitySupported ? 1 : 0,
-                    format.isHighPhotoQualitySupported ? 1 : 0, min(video, 3_000_000))
-        }
-        return candidates.max { rank($0) < rank($1) }
     }
 
     private func applyZoom() {

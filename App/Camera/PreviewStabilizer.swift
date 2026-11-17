@@ -43,16 +43,15 @@ final class PreviewStabilizer {
         resetID = -1
     }
 
-    func update(_ buffer: CVPixelBuffer, time: Double, controls: ZoomControls,
-                hardware: CGFloat, fieldOfView: CGFloat) -> Reading {
+    func update(_ buffer: CVPixelBuffer, time: Double, controls: ZoomControls, hardware: CGFloat) -> Reading {
         let digital = max(1, CGFloat(controls.zoom) / hardware)
         let size = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
         let area = CameraGeometry.sourceArea(in: CGRect(origin: .zero, size: size))
         let areaTop = size.height - area.maxY
-        let patchWidth = min(area.width * 0.46, max(area.width * 0.16, area.width / digital * 1.3))
+        let patchWidth = min(area.width * 0.38, max(area.width * 0.13, area.width / digital * 1.2))
         let roiSpan = max(2, patchWidth)
         let viewport = CameraGeometry.crop(in: CGRect(origin: .zero, size: size),
-                                           center: center, digital: digital, aspect: controls.aspect)
+                                           center: center, digital: digital, aspect: CameraGeometry.aspect)
         if time - lastMeter >= 0.4 || time < lastMeter {
             lastMeter = time
             let meter = CGRect(x: viewport.minX, y: size.height - viewport.maxY,
@@ -66,14 +65,15 @@ final class PreviewStabilizer {
             previousZoom = controls.zoom
         }
         let requested = controls.locked ? controls.anchor : CGPoint(x: 0.5, y: 0.5)
-        if resetID != controls.trackingReset || abs(previousHardware - hardware) > 0.02 ||
-            time - lastTime > 0.23 || time <= lastTime {
+        let elapsed = time - lastTime
+        if resetID != controls.trackingReset || abs(previousHardware - hardware) > 0.015 {
             center = CameraGeometry.bounded(requested, digital: digital)
             prior = nil
             lastMatch = 0
             resetID = controls.trackingReset
         }
-        guard digital > 1.08 else {
+        if elapsed > 0.23 || elapsed <= 0 { prior = nil }
+        guard controls.zoom >= ZoomControls.minimumLockZoom, digital > 1.005 else {
             center = CameraGeometry.bounded(requested, digital: digital)
             prior = nil
             return Reading(center: center, tracking: false, highlights: highlights, sample: nil)
@@ -83,38 +83,32 @@ final class PreviewStabilizer {
         let rect = CGRect(x: area.minX + searchCenter.x * area.width - roiSpan / 2,
                           y: areaTop + searchCenter.y * area.height - roiSpan / 2,
                           width: roiSpan, height: roiSpan)
-        let patch = luma(buffer, rect: rect, size: 60)
-        var predicted = CGPoint.zero
-        if let sample = motion.deviceMotion, time - lastTime < 0.12 {
-            let focal = size.height * hardware / (2 * tan(max(0.15, fieldOfView) / 2))
-            let dt = max(0, time - lastTime)
-            predicted = CGPoint(x: sample.rotationRate.y * dt * focal / area.width,
-                                y: sample.rotationRate.x * dt * focal / area.height)
-        }
+        let patch = luma(buffer, rect: rect, size: 76)
         let match: PatchRegistration.Match?
         if let prior, let patch, abs(previousZoom / controls.zoom - 1) < 0.025 {
-            match = PatchRegistration.match(prior, patch, radius: 8, threshold: 0.83)
+            match = PatchRegistration.match(prior, patch, radius: 10, threshold: 0.86)
         } else {
             match = nil
         }
 
-        var next = searchCenter
+        var movement = CGPoint.zero
         if let match, let patch {
             lastMatch = time
             let scale = roiSpan / CGFloat(patch.size)
-            next = CGPoint(x: priorCenter.x + CGFloat(match.offset.x) * scale / area.width,
-                           y: priorCenter.y + CGFloat(match.offset.y) * scale / area.height)
-        } else if time - lastTime < 0.12 {
-            next.x += max(-0.011, min(0.011, predicted.x))
-            next.y += max(-0.011, min(0.011, predicted.y))
+            movement = CGPoint(x: priorCenter.x - searchCenter.x + CGFloat(match.offset.x) * scale / area.width,
+                               y: priorCenter.y - searchCenter.y + CGFloat(match.offset.y) * scale / area.height)
         }
 
-        // When unlocked, let deliberate pans lead the crop. While locked, follow
-        // the neighborhood with a slow drift correction; clamp at sensor edges.
-        let recenter: CGFloat = controls.locked ? (time - lastMatch > 0.5 ? 0.014 : 0.001) : 0.21
-        next.x += (requested.x - next.x) * recenter
-        next.y += (requested.y - next.y) * recenter
-        center = CameraGeometry.bounded(next, digital: digital)
+        // OIS already corrects motion before the frame arrives. Use the gyro
+        // to detect panning without injecting a second correction into the crop.
+        let rate = motion.deviceMotion?.rotationRate
+        let panning = hypot(rate?.x ?? 0, rate?.y ?? 0) > 0.40
+        let recentlyTracked = time - lastMatch < 0.18
+        let followTime: Double = controls.locked ? (recentlyTracked ? 20 : 2.4) : (panning ? 0.16 : 0.72)
+        let hold = match == nil && recentlyTracked
+        let dt = hold ? 0 : min(0.075, max(0, elapsed))
+        center = CameraGeometry.stabilizedCenter(searchCenter, toward: requested, movement: movement,
+                                                digital: digital, elapsed: dt, followTime: followTime)
 
         prior = patch
         priorCenter = searchCenter
@@ -135,10 +129,18 @@ final class PreviewStabilizer {
         var values = [Float](repeating: 0, count: size * size)
         let videoRange = CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         for y in 0..<size {
-            let sy = min(height - 1, max(0, Int(rect.minY + (CGFloat(y) + 0.5) / CGFloat(size) * rect.height)))
+            let sy = min(CGFloat(height - 1), max(0, rect.minY + (CGFloat(y) + 0.5) * rect.height / CGFloat(size) - 0.5))
+            let y0 = Int(sy)
+            let y1 = min(height - 1, y0 + 1)
+            let fy = Float(sy - CGFloat(y0))
             for x in 0..<size {
-                let sx = min(width - 1, max(0, Int(rect.minX + (CGFloat(x) + 0.5) / CGFloat(size) * rect.width)))
-                let sample = Float(src[sy * rowBytes + sx])
+                let sx = min(CGFloat(width - 1), max(0, rect.minX + (CGFloat(x) + 0.5) * rect.width / CGFloat(size) - 0.5))
+                let x0 = Int(sx)
+                let x1 = min(width - 1, x0 + 1)
+                let fx = Float(sx - CGFloat(x0))
+                let top = Float(src[y0 * rowBytes + x0]) * (1 - fx) + Float(src[y0 * rowBytes + x1]) * fx
+                let bottom = Float(src[y1 * rowBytes + x0]) * (1 - fx) + Float(src[y1 * rowBytes + x1]) * fx
+                let sample = top * (1 - fy) + bottom * fy
                 values[y * size + x] = videoRange ? max(0, min(1, (sample - 16) / 219)) : sample / 255
             }
         }

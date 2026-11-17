@@ -44,7 +44,6 @@ enum PreviewStatus: Equatable {
 
 struct CameraHardware {
     var zoom: CGFloat = 1
-    var fieldOfView: CGFloat = 1.2
     var constrained = false
 }
 
@@ -102,12 +101,12 @@ final class PreviewPipeline {
         frameTime = timestamp
 
         let reading = stabilizer.update(buffer, time: timestamp, controls: controls,
-                                        hardware: hardware.zoom, fieldOfView: hardware.fieldOfView)
+                                        hardware: hardware.zoom)
         let image = CIImage(cvPixelBuffer: buffer)
         let area = CameraGeometry.sourceArea(in: image.extent)
         let crop = CameraGeometry.crop(in: image.extent, center: reading.center,
                                        digital: CGFloat(controls.zoom) / hardware.zoom,
-                                       aspect: controls.aspect)
+                                       aspect: CameraGeometry.aspect)
         let cropped = ImageTools.normalized(image.cropped(to: crop))
         var output = cropped
         var status: PreviewStatus = wantsNeural ? (modelFailed ? .modelUnavailable : .limited) : .standard

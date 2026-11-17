@@ -94,14 +94,6 @@ final class CameraModel: ObservableObject {
         if hardwareZoom != latest.hardware { hardwareZoom = latest.hardware }
     }
 
-    func aspect(_ size: CGSize) {
-        guard size.width > 0, size.height > 0 else { return }
-        let ratio = max(0.42, min(CameraGeometry.aspect, size.width / size.height))
-        guard abs(controls.aspect - ratio) > 0.0001 else { return }
-        controls.aspect = ratio
-        engine.update(controls)
-    }
-
     func select(_ mode: ZoomMode) {
         let zoom = min(mode.range.upperBound, max(mode.range.lowerBound, controls.zoom))
         applyZoom(zoom, mode: mode)
@@ -115,7 +107,7 @@ final class CameraModel: ObservableObject {
         guard phase != .capturing else { return }
         let value = min(mode.range.upperBound, max(mode.range.lowerBound, factor))
         guard controls.mode != mode || abs(controls.zoom - value) > 0.001 else { return }
-        if value < 5 && controls.locked {
+        if value < ZoomControls.minimumLockZoom && controls.locked {
             controls.locked = false
             controls.trackingReset += 1
         }
@@ -131,7 +123,7 @@ final class CameraModel: ObservableObject {
     }
 
     func toggleLock() {
-        guard controls.zoom >= 5, phase != .capturing else { return }
+        guard controls.zoom >= ZoomControls.minimumLockZoom, phase != .capturing else { return }
         controls.locked.toggle()
         controls.anchor = preview.latest.read()?.center ?? CGPoint(x: 0.5, y: 0.5)
         controls.trackingReset += 1

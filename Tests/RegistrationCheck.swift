@@ -34,6 +34,24 @@ struct RegistrationCheck {
         let selected = CameraGeometry.point(in: crop, at: CGPoint(x: 0.5, y: 0.5), in: rect)
         precondition(rect.contains(crop) && abs(crop.width / crop.height - 0.46) < 1e-6)
         precondition(abs(selected.x - center.x) < 1e-6 && abs(selected.y - center.y) < 1e-6)
+
+        let native = CGRect(x: 0, y: 0, width: 6048, height: 8064)
+        let anchor = CGPoint(x: 0.5, y: 0.5)
+        precondition(CameraGeometry.crop(in: native, center: anchor, digital: 1, aspect: 0.75) == native)
+        var stabilized = anchor
+        var priorDrift = 0.0
+        var peakError = 0.0
+        for index in 0..<90 {
+            let drift = 0.008 * sin(Double(index) * 0.43)
+            stabilized = CameraGeometry.stabilizedCenter(stabilized, toward: anchor,
+                movement: CGPoint(x: drift - priorDrift, y: 0), digital: 3, elapsed: 1.0 / 30, followTime: 0.72)
+            peakError = max(peakError, abs(stabilized.x - (anchor.x + drift)))
+            priorDrift = drift
+        }
+        precondition(peakError < 0.002, "Synthetic jitter was not reduced enough")
+        let rejectedJump = CameraGeometry.stabilizedCenter(anchor, toward: anchor,
+            movement: CGPoint(x: 0.10, y: 0), digital: 50, elapsed: 1.0 / 30, followTime: 0.72)
+        precondition(rejectedJump.x - anchor.x <= 0.22 / 50)
         print("Registration and framing: OK")
     }
 }

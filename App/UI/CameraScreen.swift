@@ -22,15 +22,16 @@ struct CameraScreen: View {
 
     var body: some View {
         ZStack {
-            cameraCanvas
             VStack(spacing: 0) {
                 header
-                Spacer(minLength: 8)
-                if let notice = model.notice { message(notice) }
-                if exposurePanel { brightness }
+                    .padding(.horizontal, 18)
+                cameraCanvas
+                    .frame(maxHeight: .infinity)
+                if let notice = model.notice { message(notice).padding(.horizontal, 18) }
+                if exposurePanel { brightness.padding(.horizontal, 18) }
                 controls
+                    .padding(.horizontal, 18)
             }
-            .padding(.horizontal, 18)
             .padding(.top, 9)
             .padding(.bottom, 7)
             statusOverlay
@@ -63,34 +64,36 @@ struct CameraScreen: View {
         }
         .sheet(isPresented: $info) { information }
         .fullScreenCover(item: $viewedPhoto) { item in
-            ZStack(alignment: .topTrailing) {
-                Color.black.ignoresSafeArea()
-                Image(uiImage: item.image).resizable().scaledToFit()
+            NavigationStack {
+                Image(uiImage: item.image)
+                    .resizable().scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.black)
                     .accessibilityLabel("Выбранная фотография")
-                Button { viewedPhoto = nil } label: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 30)).padding(20)
+                    .navigationTitle("Фото")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Готово") { viewedPhoto = nil }
+                                .accessibilityLabel("Закрыть фотографию")
+                        }
+                    }
+                    .toolbarBackground(.visible, for: .navigationBar)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Закрыть фотографию")
-            }
+                .statusBarHidden(false)
+                .persistentSystemOverlays(.visible)
         }
     }
 
     private var cameraCanvas: some View {
         GeometryReader { geometry in
-            let size = geometry.size
+            let width = max(1, min(geometry.size.width, geometry.size.height * CameraGeometry.aspect))
+            let size = CGSize(width: width, height: width / CameraGeometry.aspect)
             ZStack {
                 Viewfinder(pipeline: model.preview)
-                LinearGradient(stops: [.init(color: .black.opacity(0.75), location: 0),
-                                       .init(color: .clear, location: 0.24),
-                                       .init(color: .clear, location: 0.57),
-                                       .init(color: .black.opacity(0.88), location: 1)],
-                               startPoint: .top, endPoint: .bottom)
-                    .allowsHitTesting(false)
-                if model.controls.zoom >= 5 || model.focusMark != nil {
+                if model.controls.zoom >= ZoomControls.minimumLockZoom || model.focusMark != nil {
                     let mark = model.controls.locked ? CGPoint(x: 0.5, y: 0.5)
-                        : (model.focusMark ?? CGPoint(x: 0.5, y: 0.46))
+                        : (model.focusMark ?? CGPoint(x: 0.5, y: 0.5))
                     Reticle(locked: model.controls.locked, strong: model.focusMark != nil)
                         .stroke(model.controls.locked || model.focusMark != nil ? accent : .white.opacity(0.57),
                                 style: StrokeStyle(lineWidth: 1.15, lineCap: .round))
@@ -110,10 +113,8 @@ struct CameraScreen: View {
                 pinchBase = base
                 model.setPreset(min(200, max(1, base * value.magnification)))
             }.onEnded { _ in pinchBase = nil })
-            .onAppear { model.aspect(size) }
-            .onChange(of: size) { _, value in model.aspect(value) }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .ignoresSafeArea()
     }
 
     private var header: some View {
@@ -139,7 +140,7 @@ struct CameraScreen: View {
     private var stabilizationLabel: String {
         if model.controls.locked { return model.tracking ? "ZOOM LOCK · ЗАХВАТ" : "ZOOM LOCK · ПОИСК" }
         if model.tracking { return "СТАБИЛИЗАЦИЯ · АКТИВНА" }
-        if model.controls.zoom >= 5 && model.preview.gyroAvailable { return "СТАБИЛИЗАЦИЯ · ГИРО" }
+        if model.controls.zoom >= ZoomControls.minimumLockZoom { return "СТАБИЛИЗАЦИЯ · ПОИСК" }
         return "ОСНОВНАЯ КАМЕРА"
     }
 
@@ -187,8 +188,8 @@ struct CameraScreen: View {
                     Spacer(minLength: 85)
                     icon("scope", label: model.controls.locked ? "Отключить Zoom Lock" : "Включить Zoom Lock",
                          active: model.controls.locked) { model.toggleLock() }
-                        .disabled(model.controls.zoom < 5)
-                        .opacity(model.controls.zoom < 5 ? 0.46 : 1)
+                        .disabled(model.controls.zoom < ZoomControls.minimumLockZoom)
+                        .opacity(model.controls.zoom < ZoomControls.minimumLockZoom ? 0.46 : 1)
                     icon("sparkles", label: model.controls.neural ? "Отключить ИИ" : "Включить ИИ",
                          active: model.controls.neural && model.controls.mode != .quality) {
                         model.setNeural(!model.controls.neural)
