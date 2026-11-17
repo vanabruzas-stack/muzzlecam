@@ -1,0 +1,2 @@
+53bd45d638d43ad52c29dc7bb580a5b24c6dbfb230212b0104991b49f9ef319c  MuzzlePreviewSR.mlmodel
+d959a6e379f012793346258fb76bea20a1fd6cc644fb0d2a9240df438843df5d  MuzzlePhotoSR.mlmodel
